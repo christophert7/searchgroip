@@ -218,6 +218,7 @@ footer{margin-top:40px;padding-top:14px;border-top:1px solid var(--ink);font-fam
     <!-- TEST -->
     <div class="actions" style="margin-bottom:16px">
       <button class="btn btn-primary" onclick="testAPI()">🧪 اختبر الاتصال</button>
+      <button class="btn btn-ghost" onclick="resetConfig()" style="font-size:12px;padding:10px 16px">🔄 إعادة تعيين</button>
     </div>
     <div id="test-result" style="display:none"></div>
 
@@ -318,8 +319,8 @@ const MODELS = [
   { id:'mistralai/mistral-7b-instruct:free',            name:'Mistral 7B',            provider:'Mistral',    price:'مجاني', priceCls:'free', web:false },
   { id:'google/gemma-2-9b-it:free',                     name:'Gemma 2 9B',            provider:'Google',     price:'مجاني', priceCls:'free', web:false },
   { id:'openai/gpt-4o-mini',                            name:'GPT-4o Mini',           provider:'OpenAI',     price:'~$0.0002/بحث', priceCls:'paid', web:false },
-  { id:'perplexity/llama-3.1-sonar-small-128k-online',  name:'Perplexity Sonar Small',provider:'Perplexity', price:'~$0.0003/بحث', priceCls:'paid', web:true },
-  { id:'perplexity/llama-3.1-sonar-large-128k-online',  name:'Perplexity Sonar Large',provider:'Perplexity', price:'~$0.001/بحث',  priceCls:'paid', web:true },
+  { id:'perplexity/sonar',      name:'Perplexity Sonar',    provider:'Perplexity', price:'~$0.0003/بحث', priceCls:'paid', web:true },
+  { id:'perplexity/sonar-pro',  name:'Perplexity Sonar Pro', provider:'Perplexity', price:'~$0.003/بحث',  priceCls:'paid', web:true },
 ];
 
 const MODES = [
@@ -353,8 +354,16 @@ function init() {
   // Load saved config
   try {
     const saved = JSON.parse(localStorage.getItem('fbgf_config') || '{}');
-    if (saved.key)   { state.orKey = saved.key;       document.getElementById('or-key').value = saved.key; }
-    if (saved.model) { state.modelId = saved.model; }
+    if (saved.key)   { state.orKey = saved.key; document.getElementById('or-key').value = saved.key; }
+    // Only restore model if it still exists in current MODELS list
+    if (saved.model && MODELS.find(m => m.id === saved.model)) {
+      state.modelId = saved.model;
+    } else if (saved.model) {
+      // Old/invalid model ID — reset to default and clear
+      console.log('Old model ID detected, resetting:', saved.model);
+      state.modelId = MODELS[0].id;
+      localStorage.setItem('fbgf_config', JSON.stringify({ key: saved.key || '', model: state.modelId, mode: saved.mode || 'queries' }));
+    }
     if (saved.mode)  { state.mode = saved.mode; }
   } catch(_) {}
 
@@ -364,7 +373,18 @@ function init() {
   updateHeader();
 }
 
-function saveConfig() {
+function resetConfig() {
+  localStorage.removeItem('fbgf_config');
+  state.modelId = MODELS[0].id;
+  state.mode = 'queries';
+  renderModels();
+  renderModes();
+  const el = document.getElementById('test-result');
+  el.style.display = 'block';
+  el.innerHTML = '<div style="background:#f0fdf4;border:2px solid var(--green);padding:10px 14px;font-family:monospace;font-size:12px;color:#166534">✅ تمت إعادة التعيين — اختر الموديل مجدداً</div>';
+}
+
+
   state.orKey = document.getElementById('or-key').value;
   localStorage.setItem('fbgf_config', JSON.stringify({ key: state.orKey, model: state.modelId, mode: state.mode }));
   updateHeader();
@@ -469,7 +489,8 @@ function showTab(id) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + id).classList.add('active');
-  event.target.classList.add('active');
+  const idx = id === 'settings' ? 0 : 1;
+  document.querySelectorAll('.tab-btn')[idx].classList.add('active');
 }
 
 /* ════════════════════════════════════════
@@ -559,29 +580,97 @@ No intro, no numbers, no extra text.`;
 /* ════════════════════════════════════════
    FIND DIRECT GROUPS
 ════════════════════════════════════════ */
+function validateGroupUrl(url) {
+  try {
+    const u = new URL(url);
+    if (!u.hostname.includes('facebook.com')) return false;
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (parts[0] !== 'groups') return false;
+    const groupId = parts[1];
+    if (!groupId || groupId.length < 3) return false;
+    // Block generic Facebook paths
+    const blocked = ['search','feed','explore','discover','events','marketplace','watch','home','login','signup','create'];
+    if (blocked.includes(groupId.toLowerCase())) return false;
+    return true;
+  } catch(_) { return false; }
+}
+
 async function findDirectGroups(niche, country) {
-  const prompt = `Search the web for real public Facebook groups about "${niche}" ${country?`in "${country}"`:''}.
-Try: site:facebook.com/groups "${niche}" "${country||'arab'}"
-Also try French and Arabic variations.
-Output ONLY real group URLs, one per line:
-https://www.facebook.com/groups/XXX/ | Group Name
-No other text.`;
+  const prompt = `You are a Facebook group finder. Search the web MULTIPLE TIMES to find real, currently active Facebook groups.
 
-  const text = await callOR([{ role:'user', content:prompt }], 2000);
+TARGET: Find Facebook groups about "${niche}" ${country ? `in "${country}"` : 'in Arab countries'}.
+
+IMPORTANT SEARCHES TO RUN (run each one):
+1. site:facebook.com/groups "${niche}" "${country || 'arab'}" members
+2. site:facebook.com/groups "${niche}" "${country}" groupe members
+3. site:facebook.com/groups "${niche}" "${country}" مجموعة أعضاء
+4. facebook.com/groups "${niche}" "${country}" -login -signup
+5. "${niche}" "${country}" groupe facebook rejoindre
+
+For EACH group found, output EXACTLY this format on one line:
+GROUP: https://www.facebook.com/groups/EXACT_ID_OR_NAME/ | NAME: Group Title | MEMBERS: number_if_known
+
+Rules:
+- Only include URLs with /groups/ followed by a real ID or name
+- Never include facebook.com/groups/search or facebook.com/groups/feed
+- Prefer groups with numeric IDs (more stable)
+- Prefer groups with more members (more active)
+- Aim for 15 groups minimum
+
+Output ONLY the GROUP: lines, nothing else.`;
+
+  const text = await callOR([{ role:'user', content:prompt }], 3000);
+
+  // Extract from GROUP: format first
+  const groups = [];
+  const seen = new Set();
+
+  // Parse structured GROUP: lines
+  const groupLines = text.split('\n').filter(l => l.includes('GROUP:'));
+  for (const line of groupLines) {
+    const urlMatch = line.match(/https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/i);
+    if (!urlMatch) continue;
+    let url = urlMatch[0].split('?')[0];
+    if (!url.endsWith('/')) url += '/';
+    if (!validateGroupUrl(url) || seen.has(url)) continue;
+    seen.add(url);
+
+    const nameMatch = line.match(/NAME:\s*([^|]+)/i);
+    const membersMatch = line.match(/MEMBERS:\s*([\d,k.]+\+?)/i);
+    const slug = url.match(/groups\/([^/]+)/)?.[1] || '';
+    const isNumeric = /^\d+$/.test(slug);
+
+    groups.push({
+      url,
+      mobileUrl: url.replace('www.facebook.com', 'm.facebook.com'),
+      appUrl: isNumeric ? `fb://group/${slug}` : null,
+      name: nameMatch ? nameMatch[1].trim() : (isNumeric ? '' : slug.replace(/[._-]/g, ' ')),
+      members: membersMatch ? membersMatch[1].trim() : '',
+      isNumeric,
+    });
+  }
+
+  // Fallback: extract any facebook group URLs not already found
   const urlRegex = /https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/gi;
-  const urls = [...new Set([...text.matchAll(urlRegex)].map(m => {
-    let u = m[0].split('?')[0];
-    return u.endsWith('/') ? u : u+'/';
-  }))];
+  for (const m of text.matchAll(urlRegex)) {
+    let url = m[0].split('?')[0];
+    if (!url.endsWith('/')) url += '/';
+    if (!validateGroupUrl(url) || seen.has(url)) continue;
+    seen.add(url);
+    const slug = url.match(/groups\/([^/]+)/)?.[1] || '';
+    const isNumeric = /^\d+$/.test(slug);
+    groups.push({
+      url,
+      mobileUrl: url.replace('www.facebook.com', 'm.facebook.com'),
+      appUrl: isNumeric ? `fb://group/${slug}` : null,
+      name: isNumeric ? '' : slug.replace(/[._-]/g, ' '),
+      members: '',
+      isNumeric,
+    });
+  }
 
-  return urls.map(url => {
-    const esc = url.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\/$/,'/?');
-    const ln = text.match(new RegExp(esc+'[^\n]*','i'));
-    let name = '';
-    if (ln) { const p = ln[0].match(/\|\s*(.+)$/); if (p) name = p[1].trim(); }
-    const slug = url.match(/groups\/([^/]+)/)?.[1]||'';
-    return { url, name: name||(/^\d+$/.test(slug)?'':slug.replace(/[._-]/g,' ')) };
-  });
+  if (groups.length === 0) throw new Error('لم يُعثر على جروبات. جرّب كلمات مختلفة أو موديل آخر.');
+  return groups;
 }
 
 /* ════════════════════════════════════════
@@ -605,12 +694,19 @@ async function doSearch() {
   const country = document.getElementById('country').value.trim();
   if (!niche) { document.getElementById('niche').focus(); return; }
   if (!state.orKey && !document.getElementById('or-key').value) {
-    showTab({target:document.querySelectorAll('.tab-btn')[0]},'settings');
+    showTab('settings');
     return;
   }
   state.orKey = state.orKey || document.getElementById('or-key').value;
+  if (!state.orKey.trim()) {
+    showTab('settings');
+    const el = document.getElementById('test-result');
+    el.style.display = 'block';
+    el.innerHTML = '<div style="background:#fef2f2;border:2px solid var(--accent);padding:12px 16px;font-size:13px;color:var(--accent)">⚠️ أدخل OpenRouter API Key أولاً ثم اضغط ابحث مجدداً</div>';
+    return;
+  }
 
-  showTab({target:document.querySelectorAll('.tab-btn')[1]},'search');
+  showTab('search');
   setLoading(true, state.mode==='direct'?'يبحث في الإنترنت...':'يولّد الاستعلامات...');
   showStatus(null);
   document.getElementById('results-container').innerHTML = '';
@@ -768,15 +864,23 @@ function renderCards() {
 
   grid.innerHTML = items.map((item,i) => {
     if (mode==='direct') {
+      const isNumeric = item.isNumeric;
+      const reliability = isNumeric ? '🟢 ID رقمي — موثوق' : '🟡 اسم نصي';
       return `<div class="card">
         <div class="card-num">رقم ${i+1}</div>
-        <div style="font-weight:700;font-size:14px;margin-bottom:8px;margin-top:4px">${item.name||`جروب #${i+1}`}</div>
-        <div class="card-term fb">${item.url}</div>
-        <div class="card-actions direct">
-          <button class="copy-btn ${copiedCards.has('d'+i)?'done':''}" onclick="copyCard('d${i}','${item.url}',this)">${copiedCards.has('d'+i)?'✓':'📋'}</button>
-          <a class="open-btn" href="${item.url}" target="_blank" style="background:var(--fb)">🔗 فتح الجروب</a>
-          <a class="share-btn" href="https://t.me/share/url?url=${encodeURIComponent(item.url)}&text=${encodeURIComponent(item.name||'Facebook Group')}" target="_blank">✈️ شارك</a>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:4px;margin-bottom:6px;flex-wrap:wrap;gap:4px">
+          <div style="font-weight:700;font-size:14px;color:var(--ink)">${item.name || `جروب #${i+1}`}</div>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:${isNumeric?'var(--green)':'#f59e0b'}">${reliability}</span>
         </div>
+        ${item.members ? `<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--soft);margin-bottom:6px">👥 ${item.members} عضو</div>` : ''}
+        <div class="card-term fb" style="font-size:11px;margin-bottom:10px">${item.url}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+          ${item.appUrl ? `<a class="open-btn" href="${item.appUrl}" style="background:#1a1a2e;font-size:11px">📱 فتح في التطبيق</a>` : ''}
+          <a class="open-btn" href="${item.mobileUrl}" target="_blank" style="background:#166fe5;font-size:11px;${item.appUrl?'':'grid-column:1/3'}">📲 موبايل</a>
+          ${item.appUrl ? `<a class="open-btn" href="${item.url}" target="_blank" style="background:var(--fb);font-size:11px">🌐 ويب</a>` : `<a class="open-btn" href="${item.url}" target="_blank" style="background:var(--fb);font-size:11px">🌐 ويب</a>`}
+          <button class="copy-btn ${copiedCards.has('d'+i)?'done':''}" onclick="copyCard('d${i}','${item.url}',this)" style="font-size:11px">${copiedCards.has('d'+i)?'✓ نُسخ':'📋 نسخ'}</button>
+        </div>
+        <a class="share-btn" href="https://t.me/share/url?url=${encodeURIComponent(item.url)}&text=${encodeURIComponent((item.name||'Facebook Group')+'\n'+item.url)}" target="_blank" style="display:block;text-align:center;font-size:11px">✈️ مشاركة في تيليجرام</a>
       </div>`;
     } else {
       const info = TYPE_INFO[item.type]||{label:item.type,emoji:'🔹',color:'#888'};
