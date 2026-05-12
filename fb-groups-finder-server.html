@@ -676,6 +676,8 @@ Do NOT include URLs that redirect to facebook.com/login or facebook.com home.`;
   }
   return groups;
 }
+
+function validateGroupUrl(url) {
   try {
     const u = new URL(url);
     if (!u.hostname.includes('facebook.com')) return false;
@@ -688,84 +690,6 @@ Do NOT include URLs that redirect to facebook.com/login or facebook.com home.`;
     if (blocked.includes(groupId.toLowerCase())) return false;
     return true;
   } catch(_) { return false; }
-}
-
-async function findDirectGroups(niche, country) {
-  const prompt = `You are a Facebook group finder. Search the web MULTIPLE TIMES to find real, currently active Facebook groups.
-
-TARGET: Find Facebook groups about "${niche}" ${country ? `in "${country}"` : 'in Arab countries'}.
-
-IMPORTANT SEARCHES TO RUN (run each one):
-1. site:facebook.com/groups "${niche}" "${country || 'arab'}" members
-2. site:facebook.com/groups "${niche}" "${country}" groupe members
-3. site:facebook.com/groups "${niche}" "${country}" مجموعة أعضاء
-4. facebook.com/groups "${niche}" "${country}" -login -signup
-5. "${niche}" "${country}" groupe facebook rejoindre
-
-For EACH group found, output EXACTLY this format on one line:
-GROUP: https://www.facebook.com/groups/EXACT_ID_OR_NAME/ | NAME: Group Title | MEMBERS: number_if_known
-
-Rules:
-- Only include URLs with /groups/ followed by a real ID or name
-- Never include facebook.com/groups/search or facebook.com/groups/feed
-- Prefer groups with numeric IDs (more stable)
-- Prefer groups with more members (more active)
-- Aim for 15 groups minimum
-
-Output ONLY the GROUP: lines, nothing else.`;
-
-  const text = await callOR([{ role:'user', content:prompt }], 3000);
-
-  // Extract from GROUP: format first
-  const groups = [];
-  const seen = new Set();
-
-  // Parse structured GROUP: lines
-  const groupLines = text.split('\n').filter(l => l.includes('GROUP:'));
-  for (const line of groupLines) {
-    const urlMatch = line.match(/https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/i);
-    if (!urlMatch) continue;
-    let url = urlMatch[0].split('?')[0];
-    if (!url.endsWith('/')) url += '/';
-    if (!validateGroupUrl(url) || seen.has(url)) continue;
-    seen.add(url);
-
-    const nameMatch = line.match(/NAME:\s*([^|]+)/i);
-    const membersMatch = line.match(/MEMBERS:\s*([\d,k.]+\+?)/i);
-    const slug = url.match(/groups\/([^/]+)/)?.[1] || '';
-    const isNumeric = /^\d+$/.test(slug);
-
-    groups.push({
-      url,
-      mobileUrl: url.replace('www.facebook.com', 'm.facebook.com'),
-      appUrl: isNumeric ? `fb://group/${slug}` : null,
-      name: nameMatch ? nameMatch[1].trim() : (isNumeric ? '' : slug.replace(/[._-]/g, ' ')),
-      members: membersMatch ? membersMatch[1].trim() : '',
-      isNumeric,
-    });
-  }
-
-  // Fallback: extract any facebook group URLs not already found
-  const urlRegex = /https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/gi;
-  for (const m of text.matchAll(urlRegex)) {
-    let url = m[0].split('?')[0];
-    if (!url.endsWith('/')) url += '/';
-    if (!validateGroupUrl(url) || seen.has(url)) continue;
-    seen.add(url);
-    const slug = url.match(/groups\/([^/]+)/)?.[1] || '';
-    const isNumeric = /^\d+$/.test(slug);
-    groups.push({
-      url,
-      mobileUrl: url.replace('www.facebook.com', 'm.facebook.com'),
-      appUrl: isNumeric ? `fb://group/${slug}` : null,
-      name: isNumeric ? '' : slug.replace(/[._-]/g, ' '),
-      members: '',
-      isNumeric,
-    });
-  }
-
-  if (groups.length === 0) throw new Error('لم يُعثر على جروبات. جرّب كلمات مختلفة أو موديل آخر.');
-  return groups;
 }
 
 /* ════════════════════════════════════════
