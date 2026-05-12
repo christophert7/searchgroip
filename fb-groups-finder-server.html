@@ -385,6 +385,7 @@ function resetConfig() {
 }
 
 
+function saveConfig() {
   state.orKey = document.getElementById('or-key').value;
   localStorage.setItem('fbgf_config', JSON.stringify({ key: state.orKey, model: state.modelId, mode: state.mode }));
   updateHeader();
