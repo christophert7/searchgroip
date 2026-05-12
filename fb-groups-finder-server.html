@@ -579,100 +579,68 @@ No intro, no numbers, no extra text.`;
 }
 
 async function findDirectGroups(niche, country) {
-  const prompt = `## CRITICAL INSTRUCTIONS — READ CAREFULLY
+  const prompt = `Search the web for real public Facebook groups about "${niche}" ${country ? `in "${country}"` : ''}.
 
-You are a web search assistant. You MUST search the web RIGHT NOW and ONLY report URLs that you ACTUALLY FOUND in real search results.
-
-**ABSOLUTE RULES:**
-- NEVER generate, invent, or guess any Facebook group URLs
-- NEVER make up group IDs or names
-- If you did not see a URL in actual search results, DO NOT include it
-- If you cannot find real groups, output exactly: NO_GROUPS_FOUND
-
-## YOUR TASK
-Search for real Facebook groups about: "${niche}" ${country ? `in "${country}"` : ''}
-
-## REQUIRED SEARCHES (run each one now):
+Run these searches and find real groups from the results:
 1. site:facebook.com/groups "${niche}" "${country || ''}"
 2. site:facebook.com/groups "${niche}" "${country || ''}" groupe
 3. site:facebook.com/groups "${niche}" "${country || ''}" مجموعة
-4. facebook.com/groups "${niche}" "${country || ''}" -login
+4. facebook.com/groups "${niche}" "${country || ''}"
+5. "${niche}" "${country || ''}" facebook groupe rejoindre
 
-## OUTPUT FORMAT
-For each REAL URL you actually found in search results:
-REAL_GROUP: [exact URL] | NAME: [exact name from results] | MEMBERS: [count if visible]
+IMPORTANT: Only report URLs you actually see in search results. Do not invent URLs.
 
-Only include URLs that:
-✓ Contain facebook.com/groups/
-✓ Were actually in your search results
-✓ Appear to be real group pages with members
+For each real Facebook group URL you find, output one line:
+${'`'}https://www.facebook.com/groups/XXX/ | NAME: Group Name | MEMBERS: count${'`'}
 
-Do NOT include URLs that redirect to facebook.com/login or facebook.com home.`;
+Find 10-15 real groups. Include the URL, name, and member count exactly as shown in results.
+Output only the result lines, no other text.`;
 
   const text = await callOR([{ role:'user', content:prompt }], 3000);
-
-  if (text.includes('NO_GROUPS_FOUND')) {
-    throw new Error('لم يجد الموديل جروبات حقيقية. جرّب كلمات مختلفة.');
-  }
 
   const groups = [];
   const seen = new Set();
 
-  // Only parse REAL_GROUP: lines (strict format)
-  const lines = text.split('\n');
-  for (const line of lines) {
-    if (!line.includes('REAL_GROUP:')) continue;
+  // Extract all Facebook group URLs found in response
+  const urlRegex = /https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/gi;
+  const allMatches = [...text.matchAll(urlRegex)];
 
-    const urlMatch = line.match(/https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/i);
-    if (!urlMatch) continue;
-
-    let url = urlMatch[0].split('?')[0];
+  for (const m of allMatches) {
+    let url = m[0].split('?')[0];
     if (!url.endsWith('/')) url += '/';
     if (!validateGroupUrl(url) || seen.has(url)) continue;
-    seen.add(url);
 
     const slug = url.match(/groups\/([^/]+)/)?.[1] || '';
     const isNumeric = /^\d+$/.test(slug);
-    // Reject suspiciously long numeric IDs (likely hallucinated)
-    if (isNumeric && slug.length > 16) continue;
+    // Only reject obviously fake long IDs (real IDs are 15-17 digits max)
+    if (isNumeric && slug.length > 18) continue;
 
-    const nameMatch = line.match(/NAME:\s*([^|]+)/i);
-    const membersMatch = line.match(/MEMBERS:\s*([\d,k.MK]+\+?[^|]*)/i);
+    seen.add(url);
+
+    // Try to find the line containing this URL to extract name/members
+    const escUrl = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\/$/, '/?');
+    const lineMatch = text.match(new RegExp('[^\n]*' + escUrl + '[^\n]*', 'i'));
+    let name = '', members = '';
+    if (lineMatch) {
+      const nameM = lineMatch[0].match(/NAME:\s*([^|]+?)(?:\s*\||$)/i) || lineMatch[0].match(/\|\s*([^|]+?)(?:\s*\|MEMBERS|$)/i);
+      const memM = lineMatch[0].match(/MEMBERS:\s*([\d,k.MK]+\+?[^|]*)/i);
+      if (nameM) name = nameM[1].trim().replace(/^["']+|["']+$/g, '');
+      if (memM) members = memM[1].trim();
+    }
 
     groups.push({
       url,
       mobileUrl: url.replace('www.facebook.com', 'm.facebook.com'),
       appUrl: isNumeric ? `fb://group/${slug}` : null,
-      name: nameMatch ? nameMatch[1].trim().replace(/[|]/g,'') : (isNumeric ? '' : slug.replace(/[._-]/g,' ')),
-      members: membersMatch ? membersMatch[1].trim().replace(/[|]/g,'') : '',
+      name: name || (isNumeric ? '' : slug.replace(/[._-]/g, ' ')),
+      members,
       isNumeric,
       slug,
     });
   }
 
-  // Fallback: if no REAL_GROUP lines found, try extracting any fb group URLs
   if (groups.length === 0) {
-    const urlRegex = /https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/gi;
-    for (const m of text.matchAll(urlRegex)) {
-      let url = m[0].split('?')[0];
-      if (!url.endsWith('/')) url += '/';
-      if (!validateGroupUrl(url) || seen.has(url)) continue;
-      const slug = url.match(/groups\/([^/]+)/)?.[1] || '';
-      const isNumeric = /^\d+$/.test(slug);
-      if (isNumeric && slug.length > 16) continue; // reject hallucinated IDs
-      seen.add(url);
-      groups.push({
-        url,
-        mobileUrl: url.replace('www.facebook.com', 'm.facebook.com'),
-        appUrl: isNumeric ? `fb://group/${slug}` : null,
-        name: isNumeric ? '' : slug.replace(/[._-]/g,' '),
-        members: '', isNumeric, slug,
-      });
-    }
-  }
-
-  if (groups.length === 0) {
-    throw new Error('لم يُعثر على جروبات حقيقية. جرّب Perplexity Sonar أو كلمات أخرى.');
+    throw new Error('لم يُعثر على جروبات. جرّب Perplexity Sonar Pro أو كلمات أكثر تحديداً.');
   }
   return groups;
 }
