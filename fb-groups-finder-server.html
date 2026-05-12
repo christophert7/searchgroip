@@ -578,10 +578,104 @@ No intro, no numbers, no extra text.`;
   return queries;
 }
 
-/* ════════════════════════════════════════
-   FIND DIRECT GROUPS
-════════════════════════════════════════ */
-function validateGroupUrl(url) {
+async function findDirectGroups(niche, country) {
+  const prompt = `## CRITICAL INSTRUCTIONS — READ CAREFULLY
+
+You are a web search assistant. You MUST search the web RIGHT NOW and ONLY report URLs that you ACTUALLY FOUND in real search results.
+
+**ABSOLUTE RULES:**
+- NEVER generate, invent, or guess any Facebook group URLs
+- NEVER make up group IDs or names
+- If you did not see a URL in actual search results, DO NOT include it
+- If you cannot find real groups, output exactly: NO_GROUPS_FOUND
+
+## YOUR TASK
+Search for real Facebook groups about: "${niche}" ${country ? `in "${country}"` : ''}
+
+## REQUIRED SEARCHES (run each one now):
+1. site:facebook.com/groups "${niche}" "${country || ''}"
+2. site:facebook.com/groups "${niche}" "${country || ''}" groupe
+3. site:facebook.com/groups "${niche}" "${country || ''}" مجموعة
+4. facebook.com/groups "${niche}" "${country || ''}" -login
+
+## OUTPUT FORMAT
+For each REAL URL you actually found in search results:
+REAL_GROUP: [exact URL] | NAME: [exact name from results] | MEMBERS: [count if visible]
+
+Only include URLs that:
+✓ Contain facebook.com/groups/
+✓ Were actually in your search results
+✓ Appear to be real group pages with members
+
+Do NOT include URLs that redirect to facebook.com/login or facebook.com home.`;
+
+  const text = await callOR([{ role:'user', content:prompt }], 3000);
+
+  if (text.includes('NO_GROUPS_FOUND')) {
+    throw new Error('لم يجد الموديل جروبات حقيقية. جرّب كلمات مختلفة.');
+  }
+
+  const groups = [];
+  const seen = new Set();
+
+  // Only parse REAL_GROUP: lines (strict format)
+  const lines = text.split('\n');
+  for (const line of lines) {
+    if (!line.includes('REAL_GROUP:')) continue;
+
+    const urlMatch = line.match(/https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/i);
+    if (!urlMatch) continue;
+
+    let url = urlMatch[0].split('?')[0];
+    if (!url.endsWith('/')) url += '/';
+    if (!validateGroupUrl(url) || seen.has(url)) continue;
+    seen.add(url);
+
+    const slug = url.match(/groups\/([^/]+)/)?.[1] || '';
+    const isNumeric = /^\d+$/.test(slug);
+    // Reject suspiciously long numeric IDs (likely hallucinated)
+    if (isNumeric && slug.length > 16) continue;
+
+    const nameMatch = line.match(/NAME:\s*([^|]+)/i);
+    const membersMatch = line.match(/MEMBERS:\s*([\d,k.MK]+\+?[^|]*)/i);
+
+    groups.push({
+      url,
+      mobileUrl: url.replace('www.facebook.com', 'm.facebook.com'),
+      appUrl: isNumeric ? `fb://group/${slug}` : null,
+      name: nameMatch ? nameMatch[1].trim().replace(/[|]/g,'') : (isNumeric ? '' : slug.replace(/[._-]/g,' ')),
+      members: membersMatch ? membersMatch[1].trim().replace(/[|]/g,'') : '',
+      isNumeric,
+      slug,
+    });
+  }
+
+  // Fallback: if no REAL_GROUP lines found, try extracting any fb group URLs
+  if (groups.length === 0) {
+    const urlRegex = /https?:\/\/(?:www\.)?facebook\.com\/groups\/[\w.%-]+\/?/gi;
+    for (const m of text.matchAll(urlRegex)) {
+      let url = m[0].split('?')[0];
+      if (!url.endsWith('/')) url += '/';
+      if (!validateGroupUrl(url) || seen.has(url)) continue;
+      const slug = url.match(/groups\/([^/]+)/)?.[1] || '';
+      const isNumeric = /^\d+$/.test(slug);
+      if (isNumeric && slug.length > 16) continue; // reject hallucinated IDs
+      seen.add(url);
+      groups.push({
+        url,
+        mobileUrl: url.replace('www.facebook.com', 'm.facebook.com'),
+        appUrl: isNumeric ? `fb://group/${slug}` : null,
+        name: isNumeric ? '' : slug.replace(/[._-]/g,' '),
+        members: '', isNumeric, slug,
+      });
+    }
+  }
+
+  if (groups.length === 0) {
+    throw new Error('لم يُعثر على جروبات حقيقية. جرّب Perplexity Sonar أو كلمات أخرى.');
+  }
+  return groups;
+}
   try {
     const u = new URL(url);
     if (!u.hostname.includes('facebook.com')) return false;
@@ -878,9 +972,10 @@ function renderCards() {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
           ${item.appUrl ? `<a class="open-btn" href="${item.appUrl}" style="background:#1a1a2e;font-size:11px">📱 فتح في التطبيق</a>` : ''}
           <a class="open-btn" href="${item.mobileUrl}" target="_blank" style="background:#166fe5;font-size:11px;${item.appUrl?'':'grid-column:1/3'}">📲 موبايل</a>
-          ${item.appUrl ? `<a class="open-btn" href="${item.url}" target="_blank" style="background:var(--fb);font-size:11px">🌐 ويب</a>` : `<a class="open-btn" href="${item.url}" target="_blank" style="background:var(--fb);font-size:11px">🌐 ويب</a>`}
+          <a class="open-btn" href="${item.url}" target="_blank" style="background:var(--fb);font-size:11px">🌐 ويب</a>
           <button class="copy-btn ${copiedCards.has('d'+i)?'done':''}" onclick="copyCard('d${i}','${item.url}',this)" style="font-size:11px">${copiedCards.has('d'+i)?'✓ نُسخ':'📋 نسخ'}</button>
         </div>
+        <a href="https://www.google.com/search?q=site:facebook.com/groups+%22${encodeURIComponent(item.name||item.slug)}%22" target="_blank" style="display:block;text-align:center;background:#4285f4;color:#fff;text-decoration:none;padding:8px;font-size:11px;font-weight:600;margin-bottom:6px;border:2px solid var(--ink)">🔍 تحقق على Google</a>
         <a class="share-btn" href="https://t.me/share/url?url=${encodeURIComponent(item.url)}&text=${encodeURIComponent((item.name||'Facebook Group')+'\n'+item.url)}" target="_blank" style="display:block;text-align:center;font-size:11px">✈️ مشاركة في تيليجرام</a>
       </div>`;
     } else {
